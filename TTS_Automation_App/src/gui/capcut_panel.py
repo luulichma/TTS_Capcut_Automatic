@@ -1,0 +1,393 @@
+"""
+CapCut Panel - Sequence Editor và Runner cho CapCut Automation
+"""
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
+import ttkbootstrap as ttk
+import json
+import os
+import threading
+
+from src.gui.coordinate_tool import CoordinateTool
+
+
+class CapCutPanel(ttk.Frame):
+    """Panel chỉnh sửa và chạy chuỗi tương tác CapCut"""
+
+    ACTION_TYPES = ['click', 'double_click', 'key', 'hotkey', 'paste_text', 'type_text', 'wait']
+    TEMPLATE_VARS = ['{{CURRENT_TEXT}}', '{{DIALOG_ID}}', '{{EXPORT_DIR}}', '{{LEVEL}}']
+
+    def __init__(self, parent, config_manager, sequence_engine):
+        super().__init__(parent, padding=10)
+        self.config_manager = config_manager
+        self.engine = sequence_engine
+        self.current_template = None
+        self.steps = []
+        self._editing_step_index = None
+        self._build_ui()
+        self._load_default_template()
+
+    def _build_ui(self):
+        # === Top: Template controls ===
+        tpl_frame = ttk.Labelframe(self, text="📋 Template", bootstyle="info")
+        tpl_frame.pack(fill=tk.X, pady=(0, 5))
+
+        tpl_row = ttk.Frame(tpl_frame)
+        tpl_row.pack(fill=tk.X)
+
+        ttk.Label(tpl_row, text="Template:").pack(side=tk.LEFT)
+        self.template_var = tk.StringVar()
+        self.template_combo = ttk.Combobox(tpl_row, textvariable=self.template_var, state="readonly", width=30)
+        self.template_combo.pack(side=tk.LEFT, padx=5)
+        self.template_combo.bind("<<ComboboxSelected>>", self._on_template_selected)
+        self._refresh_template_list()
+
+        ttk.Button(tpl_row, text="📂 Load", command=self._load_template_file, bootstyle="outline", width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tpl_row, text="💾 Save", command=self._save_template, bootstyle="outline-success", width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tpl_row, text="📝 Save As", command=self._save_template_as, bootstyle="outline-warning", width=8).pack(side=tk.LEFT, padx=2)
+
+        # === Middle: Step Editor ===
+        editor_frame = ttk.Labelframe(self, text="🔧 Chuỗi tương tác", bootstyle="primary")
+        editor_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+
+        # Steps list
+        list_frame = ttk.Frame(editor_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("id", "action", "target", "label", "wait")
+        self.steps_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=10)
+        self.steps_tree.heading("id", text="#")
+        self.steps_tree.heading("action", text="Action")
+        self.steps_tree.heading("target", text="Target")
+        self.steps_tree.heading("label", text="Mô tả")
+        self.steps_tree.heading("wait", text="Wait (s)")
+
+        self.steps_tree.column("id", width=30, minwidth=30)
+        self.steps_tree.column("action", width=90, minwidth=70)
+        self.steps_tree.column("target", width=120, minwidth=80)
+        self.steps_tree.column("label", width=200, minwidth=100)
+        self.steps_tree.column("wait", width=60, minwidth=50)
+
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.steps_tree.yview)
+        self.steps_tree.configure(yscrollcommand=vsb.set)
+        self.steps_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.steps_tree.bind("<Double-1>", self._edit_step)
+
+        # Step action buttons
+        btn_frame = ttk.Frame(editor_frame)
+        btn_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Button(btn_frame, text="➕ Thêm bước", command=self._add_step, bootstyle="success", width=12).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="✏️ Sửa", command=self._edit_selected, bootstyle="warning", width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="🗑️ Xóa", command=self._delete_step, bootstyle="danger", width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="⬆️", command=lambda: self._move_step(-1), width=3).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="⬇️", command=lambda: self._move_step(1), width=3).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="🎯 Pick Coords", command=self._pick_coordinate, bootstyle="info", width=12).pack(side=tk.RIGHT, padx=2)
+
+        # === Bottom: Output Config ===
+        output_frame = ttk.Labelframe(self, text="📁 Cấu hình xuất", bootstyle="secondary")
+        output_frame.pack(fill=tk.X)
+
+        out_row = ttk.Frame(output_frame)
+        out_row.pack(fill=tk.X)
+
+        ttk.Label(out_row, text="Thư mục gốc:").pack(side=tk.LEFT)
+        self.output_dir_var = tk.StringVar(value=self.config_manager.get('general.base_output_path', ''))
+        ttk.Entry(out_row, textvariable=self.output_dir_var, width=40).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ttk.Button(out_row, text="📁", command=self._browse_output, width=3, bootstyle="outline").pack(side=tk.LEFT)
+
+        # Level config
+        lv_row = ttk.Frame(output_frame)
+        lv_row.pack(fill=tk.X, pady=(5, 0))
+
+        ttk.Label(lv_row, text="Level:").pack(side=tk.LEFT)
+        self.level_start_var = tk.IntVar(value=self.config_manager.get('levels.start', 8))
+        self.level_end_var = tk.IntVar(value=self.config_manager.get('levels.end', 16))
+        ttk.Spinbox(lv_row, from_=1, to=100, textvariable=self.level_start_var, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(lv_row, text="đến").pack(side=tk.LEFT)
+        ttk.Spinbox(lv_row, from_=1, to=100, textvariable=self.level_end_var, width=5).pack(side=tk.LEFT, padx=5)
+
+        # Countdown
+        ttk.Label(lv_row, text="Đếm ngược:").pack(side=tk.LEFT, padx=(20, 0))
+        self.countdown_var = tk.IntVar(value=5)
+        ttk.Spinbox(lv_row, from_=1, to=30, textvariable=self.countdown_var, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(lv_row, text="giây").pack(side=tk.LEFT)
+
+    # --- Template Methods ---
+
+    def _refresh_template_list(self):
+        templates = self.config_manager.list_templates()
+        self.template_combo['values'] = templates
+
+    def _load_default_template(self):
+        templates = self.config_manager.list_templates()
+        if 'capcut_tts_default.json' in templates:
+            self.template_var.set('capcut_tts_default.json')
+            self._on_template_selected(None)
+
+    def _on_template_selected(self, event):
+        filename = self.template_var.get()
+        if filename:
+            data = self.config_manager.load_template(filename)
+            if data:
+                self.current_template = data
+                self.steps = data.get('steps', [])
+                self._refresh_steps_tree()
+
+    def _load_template_file(self):
+        path = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
+        if path:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self.current_template = data
+                self.steps = data.get('steps', [])
+                self._refresh_steps_tree()
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không thể load template:\n{e}")
+
+    def _save_template(self):
+        filename = self.template_var.get()
+        if not filename:
+            self._save_template_as()
+            return
+        self._do_save(filename)
+
+    def _save_template_as(self):
+        name = simpledialog.askstring("Lưu Template", "Tên template (không cần .json):")
+        if name:
+            filename = f"{name}.json" if not name.endswith('.json') else name
+            self._do_save(filename)
+            self._refresh_template_list()
+            self.template_var.set(filename)
+
+    def _do_save(self, filename):
+        template_data = {
+            "name": os.path.splitext(filename)[0],
+            "description": "Custom template",
+            "version": "1.0",
+            "steps": self.steps
+        }
+        try:
+            self.config_manager.save_template(filename, template_data)
+            messagebox.showinfo("Thành công", f"Đã lưu: {filename}")
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể lưu:\n{e}")
+
+    # --- Step Editor ---
+
+    def _refresh_steps_tree(self):
+        self.steps_tree.delete(*self.steps_tree.get_children())
+        for i, step in enumerate(self.steps):
+            target = step.get('target', '')
+            if isinstance(target, list):
+                target = f"({target[0]}, {target[1]})"
+            source = step.get('source', '')
+            if source:
+                target = f"{target} ← {source}" if target else source
+            self.steps_tree.insert("", tk.END, iid=str(i), values=(
+                step.get('id', i + 1),
+                step.get('action', ''),
+                target,
+                step.get('label', ''),
+                step.get('wait_after', 0.5)
+            ))
+
+    def _add_step(self):
+        dialog = StepEditorDialog(self, title="Thêm bước mới")
+        self.wait_window(dialog)
+        if dialog.result:
+            dialog.result['id'] = len(self.steps) + 1
+            self.steps.append(dialog.result)
+            self._refresh_steps_tree()
+
+    def _edit_step(self, event=None):
+        self._edit_selected()
+
+    def _edit_selected(self):
+        sel = self.steps_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        dialog = StepEditorDialog(self, title="Sửa bước", step_data=self.steps[idx])
+        self.wait_window(dialog)
+        if dialog.result:
+            dialog.result['id'] = self.steps[idx].get('id', idx + 1)
+            self.steps[idx] = dialog.result
+            self._refresh_steps_tree()
+
+    def _delete_step(self):
+        sel = self.steps_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if messagebox.askyesno("Xác nhận", f"Xóa bước {idx + 1}?"):
+            self.steps.pop(idx)
+            # Re-number IDs
+            for i, s in enumerate(self.steps):
+                s['id'] = i + 1
+            self._refresh_steps_tree()
+
+    def _move_step(self, direction):
+        sel = self.steps_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        new_idx = idx + direction
+        if 0 <= new_idx < len(self.steps):
+            self.steps[idx], self.steps[new_idx] = self.steps[new_idx], self.steps[idx]
+            for i, s in enumerate(self.steps):
+                s['id'] = i + 1
+            self._refresh_steps_tree()
+            self.steps_tree.selection_set(str(new_idx))
+
+    def _pick_coordinate(self):
+        """Mở coordinate picker"""
+        sel = self.steps_tree.selection()
+
+        def on_picked(coord):
+            if sel:
+                idx = int(sel[0])
+                self.steps[idx]['target'] = list(coord)
+                self._refresh_steps_tree()
+
+        CoordinateTool(self, on_coordinate_picked=on_picked)
+
+    def _browse_output(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.output_dir_var.set(path)
+
+    def get_run_config(self):
+        """Lấy config để chạy automation"""
+        return {
+            'template': {"name": "current", "steps": self.steps},
+            'output_dir': self.output_dir_var.get(),
+            'level_start': self.level_start_var.get(),
+            'level_end': self.level_end_var.get(),
+            'countdown': self.countdown_var.get(),
+        }
+
+
+class StepEditorDialog(tk.Toplevel):
+    """Dialog chỉnh sửa 1 bước trong sequence"""
+
+    ACTION_TYPES = CapCutPanel.ACTION_TYPES
+
+    def __init__(self, parent, title="Step Editor", step_data=None):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("420x380")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.result = None
+        self.step_data = step_data or {}
+        self._build_ui()
+
+    def _build_ui(self):
+        main = ttk.Frame(self, padding=15)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # Action type
+        ttk.Label(main, text="Loại action:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        self.action_var = tk.StringVar(value=self.step_data.get('action', 'click'))
+        action_combo = ttk.Combobox(main, textvariable=self.action_var, values=self.ACTION_TYPES, state="readonly", width=20)
+        action_combo.grid(row=0, column=1, pady=3, sticky=tk.W)
+        action_combo.bind("<<ComboboxSelected>>", self._on_action_changed)
+
+        # Target
+        ttk.Label(main, text="Target:").grid(row=1, column=0, sticky=tk.W, pady=3)
+        target_frame = ttk.Frame(main)
+        target_frame.grid(row=1, column=1, sticky=tk.W, pady=3)
+
+        target = self.step_data.get('target', '')
+
+        self.target_x_var = tk.StringVar(value=str(target[0]) if isinstance(target, list) and len(target) > 0 else '')
+        self.target_y_var = tk.StringVar(value=str(target[1]) if isinstance(target, list) and len(target) > 1 else '')
+        self.target_str_var = tk.StringVar(value=str(target) if not isinstance(target, list) else '')
+
+        ttk.Label(target_frame, text="X:").pack(side=tk.LEFT)
+        self.x_entry = ttk.Entry(target_frame, textvariable=self.target_x_var, width=6)
+        self.x_entry.pack(side=tk.LEFT, padx=2)
+        ttk.Label(target_frame, text="Y:").pack(side=tk.LEFT)
+        self.y_entry = ttk.Entry(target_frame, textvariable=self.target_y_var, width=6)
+        self.y_entry.pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(target_frame, text="🎯", command=self._pick, width=3, bootstyle="info-outline").pack(side=tk.LEFT, padx=3)
+
+        ttk.Label(main, text="Hoặc phím/text:").grid(row=2, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(main, textvariable=self.target_str_var, width=25).grid(row=2, column=1, sticky=tk.W, pady=3)
+
+        # Source (for paste_text)
+        ttk.Label(main, text="Source:").grid(row=3, column=0, sticky=tk.W, pady=3)
+        self.source_var = tk.StringVar(value=self.step_data.get('source', ''))
+        source_combo = ttk.Combobox(main, textvariable=self.source_var, width=25,
+                                    values=['{{CURRENT_TEXT}}', '{{DIALOG_ID}}', '{{EXPORT_DIR}}', '{{LEVEL}}'])
+        source_combo.grid(row=3, column=1, sticky=tk.W, pady=3)
+
+        # Label
+        ttk.Label(main, text="Mô tả:").grid(row=4, column=0, sticky=tk.W, pady=3)
+        self.label_var = tk.StringVar(value=self.step_data.get('label', ''))
+        ttk.Entry(main, textvariable=self.label_var, width=30).grid(row=4, column=1, sticky=tk.W, pady=3)
+
+        # Wait after
+        ttk.Label(main, text="Chờ sau (s):").grid(row=5, column=0, sticky=tk.W, pady=3)
+        self.wait_var = tk.DoubleVar(value=self.step_data.get('wait_after', 0.5))
+        ttk.Entry(main, textvariable=self.wait_var, width=8).grid(row=5, column=1, sticky=tk.W, pady=3)
+
+        # Description
+        ttk.Label(main, text="Ghi chú:").grid(row=6, column=0, sticky=tk.NW, pady=3)
+        self.desc_var = tk.StringVar(value=self.step_data.get('description', ''))
+        ttk.Entry(main, textvariable=self.desc_var, width=30).grid(row=6, column=1, sticky=tk.W, pady=3)
+
+        # Buttons
+        btn_frame = ttk.Frame(main)
+        btn_frame.grid(row=7, column=0, columnspan=2, pady=15)
+        ttk.Button(btn_frame, text="✅ Lưu", command=self._save, bootstyle="success", width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="❌ Hủy", command=self.destroy, bootstyle="danger-outline", width=10).pack(side=tk.LEFT, padx=5)
+
+    def _on_action_changed(self, event=None):
+        action = self.action_var.get()
+        is_coords = action in ('click', 'double_click')
+        state = tk.NORMAL if is_coords else tk.DISABLED
+        self.x_entry.config(state=state)
+        self.y_entry.config(state=state)
+
+    def _pick(self):
+        def on_picked(coord):
+            self.target_x_var.set(str(coord[0]))
+            self.target_y_var.set(str(coord[1]))
+        CoordinateTool(self, on_coordinate_picked=on_picked)
+
+    def _save(self):
+        action = self.action_var.get()
+        target = None
+
+        if action in ('click', 'double_click'):
+            try:
+                x = int(self.target_x_var.get())
+                y = int(self.target_y_var.get())
+                target = [x, y]
+            except ValueError:
+                messagebox.showwarning("Lỗi", "Tọa độ X, Y phải là số nguyên!")
+                return
+        else:
+            target = self.target_str_var.get() or None
+
+        self.result = {
+            'action': action,
+            'target': target,
+            'label': self.label_var.get(),
+            'wait_after': self.wait_var.get(),
+            'description': self.desc_var.get(),
+        }
+
+        source = self.source_var.get()
+        if source:
+            self.result['source'] = source
+
+        self.destroy()
