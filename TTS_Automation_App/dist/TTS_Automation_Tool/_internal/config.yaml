@@ -1,0 +1,27 @@
+general:
+  data_file: ""
+  google_sheet_url: ""
+  base_output_path: "F:\\Du_an_cty\\Sounds\\Voice\\Annoy_3"
+  skip_rows: 2
+
+columns:
+  key_column: 0
+  language_map:
+    1: "English"
+    2: "Vietnamese"
+
+levels:
+  start: 8
+  end: 16
+
+timing:
+  default_click_delay: 0.5
+  default_render_wait: 15
+  default_export_wait: 20
+
+api:
+  provider: "edge-tts"
+  voices:
+    Vietnamese: "vi-VN-HoaiMyNeural"
+    English: "en-US-JennyNeural"
+  output_format: "mp3"
