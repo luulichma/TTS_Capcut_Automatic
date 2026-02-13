@@ -6,15 +6,17 @@ from tkinter import filedialog, messagebox
 import ttkbootstrap as ttk
 
 from src.core.api_engine import APIEngine
+from src.gui.level_selector import LevelSelector
 
 
 class APIPanel(ttk.Frame):
-    """Panel cấu hình và chạy TTS API export"""
+    """Panel cấu hình và chạy TTS API export — enhanced UX"""
 
-    def __init__(self, parent, config_manager, api_engine):
+    def __init__(self, parent, config_manager, api_engine, data_manager=None):
         super().__init__(parent, padding=10)
         self.config_manager = config_manager
         self.engine = api_engine
+        self.data_manager = data_manager
         self._build_ui()
 
     def _build_ui(self):
@@ -82,16 +84,15 @@ class APIPanel(ttk.Frame):
         ttk.Radiobutton(fmt_row, text="MP3", variable=self.format_var, value="mp3").pack(side=tk.LEFT, padx=10)
         ttk.Radiobutton(fmt_row, text="WAV", variable=self.format_var, value="wav").pack(side=tk.LEFT, padx=10)
 
-        # Level config
-        lv_row = ttk.Frame(output_frame)
-        lv_row.pack(fill=tk.X, pady=(5, 0))
+        # Backup toggle
+        self.backup_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fmt_row, text="💾 Backup trước khi ghi đè",
+                        variable=self.backup_var, bootstyle="round-toggle").pack(side=tk.LEFT, padx=20)
 
-        ttk.Label(lv_row, text="Level:").pack(side=tk.LEFT)
-        self.level_start_var = tk.IntVar(value=self.config_manager.get('levels.start', 8))
-        self.level_end_var = tk.IntVar(value=self.config_manager.get('levels.end', 16))
-        ttk.Spinbox(lv_row, from_=1, to=100, textvariable=self.level_start_var, width=5).pack(side=tk.LEFT, padx=5)
-        ttk.Label(lv_row, text="đến").pack(side=tk.LEFT)
-        ttk.Spinbox(lv_row, from_=1, to=100, textvariable=self.level_end_var, width=5).pack(side=tk.LEFT, padx=5)
+        # Level selector widget
+        self.level_selector = LevelSelector(output_frame, config_manager=self.config_manager,
+                                             data_manager=self.data_manager)
+        self.level_selector.pack(fill=tk.X, pady=(5, 0))
 
         # Subfolder pattern
         subfolder_row = ttk.Frame(output_frame)
@@ -163,6 +164,11 @@ class APIPanel(ttk.Frame):
         if path:
             self.output_dir_var.set(path)
 
+    def set_data_manager(self, data_manager):
+        """Update data manager reference"""
+        self.data_manager = data_manager
+        self.level_selector.set_data_manager(data_manager)
+
     def get_run_config(self):
         """Lấy config để chạy API export"""
         return {
@@ -170,7 +176,7 @@ class APIPanel(ttk.Frame):
             'language': self.language_var.get(),
             'output_dir': self.output_dir_var.get(),
             'format': self.format_var.get(),
-            'level_start': self.level_start_var.get(),
-            'level_end': self.level_end_var.get(),
+            'levels': self.level_selector.get_levels(),
             'subfolder_pattern': self.subfolder_var.get(),
+            'auto_backup': self.backup_var.get(),
         }

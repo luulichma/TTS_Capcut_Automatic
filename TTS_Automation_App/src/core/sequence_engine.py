@@ -6,12 +6,20 @@ import pyperclip
 import time
 import json
 import threading
+import copy
 
 
 class SequenceEngine:
     """Engine chạy chuỗi tương tác tự động dựa trên template"""
 
     SUPPORTED_ACTIONS = ['click', 'double_click', 'key', 'hotkey', 'paste_text', 'type_text', 'wait']
+
+    # Timing presets: multiplier cho wait_after
+    TIMING_PRESETS = {
+        'slow': 2.0,
+        'normal': 1.0,
+        'fast': 0.5,
+    }
 
     def __init__(self, callbacks=None):
         """
@@ -23,6 +31,8 @@ class SequenceEngine:
             - on_error(step_index, error_msg)
             - on_log(message)
             - on_progress(current, total)
+            - on_retry(dialog_id, attempt)
+            - on_batch_complete(success_count, error_count, skipped_count)
         """
         self.callbacks = callbacks or {}
         self.template = None
@@ -32,6 +42,20 @@ class SequenceEngine:
         self._pause_event = threading.Event()
         self._pause_event.set()  # Not paused initially
 
+        # Enhanced features
+        self.timing_preset = 'normal'
+        self.retry_attempts = 2
+        self.dry_run = False
+        self.failed_items = []
+        self.completed_indices = []
+        self.success_count = 0
+        self.error_count = 0
+        self.skipped_count = 0
+
+        # Undo/redo for template editing
+        self._undo_stack = []
+        self._redo_stack = []
+
     def load_template(self, template_data):
         """Load template (dict hoặc file path)"""
         if isinstance(template_data, str):
@@ -39,6 +63,20 @@ class SequenceEngine:
                 self.template = json.load(f)
         else:
             self.template = template_data
+
+    def set_timing_preset(self, preset):
+        """Đặt timing preset: 'slow', 'normal', 'fast'"""
+        if preset in self.TIMING_PRESETS:
+            self.timing_preset = preset
+            self._log(f"⏱️ Timing: {preset} (x{self.TIMING_PRESETS[preset]})")
+
+    def set_retry_attempts(self, attempts):
+        """Đặt số lần retry"""
+        self.retry_attempts = max(0, int(attempts))
+
+    def set_dry_run(self, enabled):
+        """Bật/tắt dry-run mode"""
+        self.dry_run = enabled
 
     def _emit(self, event_name, *args):
         """Gọi callback nếu có"""
@@ -59,13 +97,74 @@ class SequenceEngine:
         self._pause_event.wait()  # Block nếu đang pause
         return not self._stop_event.is_set()
 
-    def execute_step(self, step, context=None):
+    # ==================== Template Editing (Undo/Redo) ====================
+
+    def _save_undo_state(self):
+        """Lưu state hiện tại vào undo stack"""
+        if self.template:
+            self._undo_stack.append(copy.deepcopy(self.template))
+            self._redo_stack.clear()
+            # Giới hạn stack size
+            if len(self._undo_stack) > 50:
+                self._undo_stack.pop(0)
+
+    def undo_template(self):
+        """Undo template edit"""
+        if self._undo_stack:
+            self._redo_stack.append(copy.deepcopy(self.template))
+            self.template = self._undo_stack.pop()
+            return True
+        return False
+
+    def redo_template(self):
+        """Redo template edit"""
+        if self._redo_stack:
+            self._undo_stack.append(copy.deepcopy(self.template))
+            self.template = self._redo_stack.pop()
+            return True
+        return False
+
+    def can_undo(self):
+        return len(self._undo_stack) > 0
+
+    def can_redo(self):
+        return len(self._redo_stack) > 0
+
+    def clone_step(self, step_index):
+        """Clone 1 step tại vị trí step_index, chèn ngay sau nó"""
+        if not self.template or 'steps' not in self.template:
+            return False
+        steps = self.template['steps']
+        if 0 <= step_index < len(steps):
+            self._save_undo_state()
+            cloned = copy.deepcopy(steps[step_index])
+            cloned['id'] = max(s.get('id', 0) for s in steps) + 1
+            cloned['label'] = cloned.get('label', '') + ' (Copy)'
+            steps.insert(step_index + 1, cloned)
+            return True
+        return False
+
+    # ==================== Step Execution ====================
+
+    def execute_step(self, step, context=None, dry_run=False):
         """Thực thi một bước trong sequence"""
         context = context or {}
         action = step.get('action', '')
         target = step.get('target')
         wait_after = step.get('wait_after', 0.5)
         label = step.get('label', '')
+
+        # Apply timing preset
+        multiplier = self.TIMING_PRESETS.get(self.timing_preset, 1.0)
+        wait_after = wait_after * multiplier
+
+        # Dry-run mode: chỉ log, không thực thi
+        if dry_run or self.dry_run:
+            if action in ('click', 'double_click') and target:
+                self._log(f"  🔍 [DRY RUN] {label}: {action} at ({target[0]}, {target[1]})")
+            else:
+                self._log(f"  🔍 [DRY RUN] {label}: {action}")
+            return True
 
         self._log(f"  → {label}")
 
@@ -132,6 +231,8 @@ class SequenceEngine:
             result = result.replace(f"{{{{{key}}}}}", str(value))
         return result
 
+    # ==================== Dialog Execution ====================
+
     def run_for_dialog(self, dialog_id, text, export_dir, dialog_index=0):
         """Chạy toàn bộ sequence cho 1 dialog"""
         if not self.template or 'steps' not in self.template:
@@ -163,38 +264,127 @@ class SequenceEngine:
         self._log(f"✅ Hoàn thành: {dialog_id}")
         return True
 
-    def run_batch(self, data_rows, key_col, text_col, export_dir):
+    def _run_with_retry(self, dialog_id, text, export_dir, dialog_index):
+        """Chạy dialog với retry logic"""
+        for attempt in range(self.retry_attempts + 1):
+            if attempt > 0:
+                self._emit('on_retry', dialog_id, attempt)
+                self._log(f"🔄 Retry lần {attempt}/{self.retry_attempts}: {dialog_id}")
+                time.sleep(1)  # Wait before retry
+
+            success = self.run_for_dialog(dialog_id, text, export_dir, dialog_index)
+            if success:
+                return True
+
+            if self._stop_event.is_set():
+                return False
+
+        return False
+
+    # ==================== Batch Processing ====================
+
+    def run_batch(self, data_rows, key_col, text_col, export_dir, resume_from=None):
         """
         Chạy batch cho nhiều dialog.
         data_rows: list of dicts hoặc DataFrame rows
+        resume_from: set of indices đã hoàn thành (để resume session)
         """
         self.is_running = True
         self._stop_event.clear()
         self._pause_event.set()
+        self.failed_items = []
+        self.completed_indices = list(resume_from) if resume_from else []
+        self.success_count = 0
+        self.error_count = 0
+        self.skipped_count = 0
 
         total = len(data_rows)
         self._log(f"🚀 Bắt đầu batch: {total} dialogs")
 
+        if resume_from:
+            self._log(f"📂 Tiếp tục từ session trước ({len(resume_from)} đã xong)")
+
         for i, row in enumerate(data_rows):
             if not self._check_controls():
                 break
+
+            # Skip nếu đã xử lý (resume mode)
+            if resume_from and i in resume_from:
+                continue
 
             dialog_id = str(row[key_col])
             text = str(row[text_col])
 
             if not text or text.strip() == '' or text == 'nan':
                 self._log(f"⏭️ Bỏ qua (trống): {dialog_id}")
+                self.skipped_count += 1
                 continue
 
             self._emit('on_progress', i + 1, total)
-            success = self.run_for_dialog(dialog_id, text, export_dir, i)
+            success = self._run_with_retry(dialog_id, text, export_dir, i)
 
-            if not success and self._stop_event.is_set():
-                break
+            if success:
+                self.success_count += 1
+                self.completed_indices.append(i)
+            else:
+                if self._stop_event.is_set():
+                    break
+                self.error_count += 1
+                self.failed_items.append({
+                    'index': i,
+                    'dialog_id': dialog_id,
+                    'text': text,
+                })
 
         self.is_running = False
-        self._log(f"🎉 Batch hoàn tất!")
+        self._log(f"🎉 Batch hoàn tất! ✅ {self.success_count} thành công, "
+                   f"❌ {self.error_count} lỗi, ⏭️ {self.skipped_count} bỏ qua")
         self._emit('on_progress', total, total)
+        self._emit('on_batch_complete', self.success_count, self.error_count, self.skipped_count)
+
+    def retry_failed(self, export_dir):
+        """Retry các items bị lỗi"""
+        if not self.failed_items:
+            self._log("✅ Không có items cần retry")
+            return
+
+        self.is_running = True
+        self._stop_event.clear()
+        self._pause_event.set()
+
+        items_to_retry = list(self.failed_items)
+        self.failed_items = []
+
+        total = len(items_to_retry)
+        self._log(f"🔄 Retry {total} items bị lỗi...")
+
+        retried_success = 0
+        retried_error = 0
+
+        for i, item in enumerate(items_to_retry):
+            if not self._check_controls():
+                break
+
+            self._emit('on_progress', i + 1, total)
+            success = self.run_for_dialog(
+                item['dialog_id'], item['text'], export_dir, item['index']
+            )
+
+            if success:
+                retried_success += 1
+                self.success_count += 1
+                self.error_count -= 1
+                self.completed_indices.append(item['index'])
+            else:
+                retried_error += 1
+                self.failed_items.append(item)
+                if self._stop_event.is_set():
+                    break
+
+        self.is_running = False
+        self._log(f"🔄 Retry hoàn tất! ✅ {retried_success} thành công, ❌ {retried_error} vẫn lỗi")
+
+    # ==================== Controls ====================
 
     def pause(self):
         """Tạm dừng"""
