@@ -1,5 +1,5 @@
 """
-Data Panel - Panel nhập liệu và preview data
+Data Panel - Panel nhập liệu, validation và preview data
 """
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -8,7 +8,7 @@ from ttkbootstrap.tableview import Tableview
 
 
 class DataPanel(ttk.Frame):
-    """Panel quản lý input data và column mapping"""
+    """Panel quản lý input data và column mapping — enhanced UX"""
 
     def __init__(self, parent, data_manager, on_data_loaded=None):
         super().__init__(parent, padding=10)
@@ -30,7 +30,14 @@ class DataPanel(ttk.Frame):
         self.source_entry = ttk.Entry(input_row, textvariable=self.source_var, width=50)
         self.source_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 5))
 
+        # Validation indicator
+        self.valid_label = ttk.Label(input_row, text="", width=3)
+        self.valid_label.pack(side=tk.LEFT)
+
         ttk.Button(input_row, text="📁", command=self._browse_file, width=3, bootstyle="outline").pack(side=tk.LEFT, padx=2)
+
+        # Real-time validation
+        self.source_var.trace_add('write', self._validate_source)
 
         # Skip rows + Load button
         skip_row = ttk.Frame(source_frame)
@@ -41,6 +48,12 @@ class DataPanel(ttk.Frame):
         ttk.Spinbox(skip_row, from_=0, to=20, textvariable=self.skip_rows_var, width=5).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(skip_row, text="⬇️ Tải dữ liệu", command=self._load_data, bootstyle="success").pack(side=tk.RIGHT)
+        ttk.Button(skip_row, text="📊 Kiểm tra", command=self._show_quality_report,
+                   bootstyle="outline-info").pack(side=tk.RIGHT, padx=5)
+
+        # Validation tooltip
+        self.valid_tooltip = ttk.Label(skip_row, text="", foreground="gray", font=("", 8))
+        self.valid_tooltip.pack(side=tk.LEFT, padx=10)
 
         # === Column Mapping (compact horizontal) ===
         self.mapping_frame = ttk.Labelframe(self, text="🔤 Gán ngôn ngữ cho cột", bootstyle="warning")
@@ -72,6 +85,59 @@ class DataPanel(ttk.Frame):
 
         self.preview_tree = None
 
+    # ==================== Validation ====================
+
+    def _validate_source(self, *args):
+        """Real-time validate source input"""
+        source = self.source_var.get().strip()
+        if not source:
+            self.valid_label.config(text="")
+            self.valid_tooltip.config(text="")
+            return
+
+        is_valid, message = self.data_manager.validate_file_path(source)
+        if is_valid:
+            self.valid_label.config(text="✅", foreground="green")
+        else:
+            self.valid_label.config(text="❌", foreground="red")
+        self.valid_tooltip.config(text=message)
+
+    def _show_quality_report(self):
+        """Hiển thị Data Quality Report"""
+        if self.data_manager.df is None:
+            messagebox.showwarning("Chưa có dữ liệu", "Vui lòng tải dữ liệu trước!")
+            return
+
+        key_idx = self.get_key_column_index()
+        text_indices = list(self.get_selected_language_columns().keys())
+
+        report = self.data_manager.get_data_quality_report(key_idx, text_indices)
+
+        # Build report text
+        lines = [f"📊 Data Quality Report\n{'='*40}\n"]
+        lines.append(f"Tổng: {report['total_rows']} dòng\n")
+
+        if report['duplicate_keys'] > 0:
+            lines.append(f"⚠️ Key trùng lặp: {report['duplicate_keys']}")
+
+        for col_idx, count in report.get('empty_rows', {}).items():
+            if count > 0:
+                col_name = self.data_manager.column_names[col_idx]
+                lines.append(f"⚠️ Cột '{col_name}': {count} dòng trống")
+
+        for col_idx, count in report.get('long_texts', {}).items():
+            if count > 0:
+                col_name = self.data_manager.column_names[col_idx]
+                lines.append(f"ℹ️ Cột '{col_name}': {count} dòng > 500 ký tự")
+
+        for issue in report.get('issues', []):
+            if issue['type'] == 'ok':
+                lines.append(f"\n{issue['message']}")
+
+        messagebox.showinfo("📊 Data Quality Report", "\n".join(lines))
+
+    # ==================== Loading ====================
+
     def _browse_file(self):
         filetypes = [
             ("Excel files", "*.xlsx *.xls"),
@@ -102,8 +168,10 @@ class DataPanel(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể tải dữ liệu:\n{e}")
 
+    # ==================== Column Mapping ====================
+
     def _update_column_mapping(self):
-        """Cập nhật UI column mapping — hiển thị dạng grid ngang"""
+        """Cập nhật UI column mapping — hiển thị dạng grid ngang + auto-detect"""
         for widget in self.mapping_inner.winfo_children():
             widget.destroy()
         self.column_combos = {}
@@ -112,12 +180,31 @@ class DataPanel(ttk.Frame):
         languages = ["(Key/ID)", "English", "Vietnamese", "Japanese", "Korean", "Chinese", "French",
                       "German", "Spanish", "Portuguese", "Thai", "Indonesian", "(Bỏ qua)"]
 
-        # Default: col 0 = Key, col 1 = English, col 2 = Vietnamese
-        defaults = {0: "(Key/ID)", 1: "English", 2: "Vietnamese"}
+        # Step 1: Auto-detect languages
+        auto_detected = self.data_manager.auto_detect_all_languages()
+
+        # Step 2: Defaults + auto-detect
+        defaults = {0: "(Key/ID)"}
+        for col_idx, lang in auto_detected.items():
+            defaults[col_idx] = lang
+
+        # Fallback nếu không detect được gì
+        if not auto_detected:
+            defaults.update({1: "English", 2: "Vietnamese"})
+
+        # Info về auto-detect
+        if auto_detected:
+            detected_info = ", ".join([f"C{k}={v}" for k, v in auto_detected.items()])
+            info_label = ttk.Label(self.mapping_inner, text=f"🔍 Auto-detected: {detected_info}",
+                                   foreground="#4fc3f7", font=("", 8))
+            info_label.grid(row=0, column=0, columnspan=3, sticky=tk.W, padx=5, pady=(0, 3))
+            row_offset = 1
+        else:
+            row_offset = 0
 
         COLS_PER_ROW = 3
         for i, col_name in enumerate(columns):
-            r = i // COLS_PER_ROW
+            r = i // COLS_PER_ROW + row_offset
             c = i % COLS_PER_ROW
 
             cell = ttk.Frame(self.mapping_inner)
@@ -144,6 +231,8 @@ class DataPanel(ttk.Frame):
             self.data_manager.set_column_language(col_index, lang)
         elif col_index in self.data_manager.column_language_map:
             del self.data_manager.column_language_map[col_index]
+
+    # ==================== Preview ====================
 
     def _toggle_preview(self):
         """Ẩn/hiện bảng preview"""
@@ -185,6 +274,8 @@ class DataPanel(ttk.Frame):
         # Auto-show preview
         self._preview_visible.set(True)
         self.preview_container.pack(fill=tk.X, pady=(0, 5))
+
+    # ==================== Accessors ====================
 
     def get_key_column_index(self):
         """Lấy index của cột Key"""

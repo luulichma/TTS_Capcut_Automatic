@@ -9,18 +9,20 @@ import os
 import threading
 
 from src.gui.coordinate_tool import CoordinateTool
+from src.gui.level_selector import LevelSelector
 
 
 class CapCutPanel(ttk.Frame):
-    """Panel chỉnh sửa và chạy chuỗi tương tác CapCut"""
+    """Panel chỉnh sửa và chạy chuỗi tương tác CapCut — enhanced UX"""
 
     ACTION_TYPES = ['click', 'double_click', 'key', 'hotkey', 'paste_text', 'type_text', 'wait']
     TEMPLATE_VARS = ['{{CURRENT_TEXT}}', '{{DIALOG_ID}}', '{{EXPORT_DIR}}', '{{LEVEL}}']
 
-    def __init__(self, parent, config_manager, sequence_engine):
+    def __init__(self, parent, config_manager, sequence_engine, data_manager=None):
         super().__init__(parent, padding=10)
         self.config_manager = config_manager
         self.engine = sequence_engine
+        self.data_manager = data_manager
         self.current_template = None
         self.steps = []
         self._editing_step_index = None
@@ -45,6 +47,33 @@ class CapCutPanel(ttk.Frame):
         ttk.Button(tpl_row, text="📂 Load", command=self._load_template_file, bootstyle="outline", width=6).pack(side=tk.LEFT, padx=2)
         ttk.Button(tpl_row, text="💾 Save", command=self._save_template, bootstyle="outline-success", width=6).pack(side=tk.LEFT, padx=2)
         ttk.Button(tpl_row, text="📝 Save As", command=self._save_template_as, bootstyle="outline-warning", width=8).pack(side=tk.LEFT, padx=2)
+
+        # Undo/Redo (Template Editor)
+        ttk.Separator(tpl_row, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        self.undo_btn = ttk.Button(tpl_row, text="↩️", command=self._undo, bootstyle="outline-secondary", width=3)
+        self.undo_btn.pack(side=tk.LEFT, padx=1)
+        self.redo_btn = ttk.Button(tpl_row, text="↪️", command=self._redo, bootstyle="outline-secondary", width=3)
+        self.redo_btn.pack(side=tk.LEFT, padx=1)
+
+        # === Timing & Mode Options ===
+        options_frame = ttk.Frame(self)
+        options_frame.pack(fill=tk.X, pady=(0, 5))
+
+        # Timing preset
+        ttk.Label(options_frame, text="⏱️ Tốc độ:").pack(side=tk.LEFT)
+        self.timing_var = tk.StringVar(value='normal')
+        for preset in ['slow', 'normal', 'fast']:
+            label = {'slow': '🐌 Slow', 'normal': '⚡ Normal', 'fast': '🚀 Fast'}[preset]
+            ttk.Radiobutton(options_frame, text=label, variable=self.timing_var,
+                           value=preset, command=self._on_timing_changed).pack(side=tk.LEFT, padx=5)
+
+        ttk.Separator(options_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+
+        # Dry-run toggle
+        self.dry_run_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options_frame, text="🔍 Dry Run (mô phỏng, không thực thi)",
+                        variable=self.dry_run_var, command=self._on_dry_run_changed,
+                        bootstyle="round-toggle-warning").pack(side=tk.LEFT)
 
         # === Middle: Step Editor ===
         editor_frame = ttk.Labelframe(self, text="🔧 Chuỗi tương tác", bootstyle="primary")
@@ -79,9 +108,10 @@ class CapCutPanel(ttk.Frame):
         btn_frame = ttk.Frame(editor_frame)
         btn_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Button(btn_frame, text="➕ Thêm bước", command=self._add_step, bootstyle="success", width=12).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text="✏️ Sửa", command=self._edit_selected, bootstyle="warning", width=8).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text="🗑️ Xóa", command=self._delete_step, bootstyle="danger", width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="➕ Thêm", command=self._add_step, bootstyle="success", width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="✏️ Sửa", command=self._edit_selected, bootstyle="warning", width=7).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="📋 Clone", command=self._clone_step, bootstyle="info", width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="🗑️ Xóa", command=self._delete_step, bootstyle="danger", width=7).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="⬆️", command=lambda: self._move_step(-1), width=3).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="⬇️", command=lambda: self._move_step(1), width=3).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="🎯 Pick Coords", command=self._pick_coordinate, bootstyle="info", width=12).pack(side=tk.RIGHT, padx=2)
@@ -98,22 +128,43 @@ class CapCutPanel(ttk.Frame):
         ttk.Entry(out_row, textvariable=self.output_dir_var, width=40).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         ttk.Button(out_row, text="📁", command=self._browse_output, width=3, bootstyle="outline").pack(side=tk.LEFT)
 
-        # Level config
-        lv_row = ttk.Frame(output_frame)
-        lv_row.pack(fill=tk.X, pady=(5, 0))
-
-        ttk.Label(lv_row, text="Level:").pack(side=tk.LEFT)
-        self.level_start_var = tk.IntVar(value=self.config_manager.get('levels.start', 8))
-        self.level_end_var = tk.IntVar(value=self.config_manager.get('levels.end', 16))
-        ttk.Spinbox(lv_row, from_=1, to=100, textvariable=self.level_start_var, width=5).pack(side=tk.LEFT, padx=5)
-        ttk.Label(lv_row, text="đến").pack(side=tk.LEFT)
-        ttk.Spinbox(lv_row, from_=1, to=100, textvariable=self.level_end_var, width=5).pack(side=tk.LEFT, padx=5)
+        # Level selector widget
+        self.level_selector = LevelSelector(output_frame, config_manager=self.config_manager,
+                                             data_manager=self.data_manager)
+        self.level_selector.pack(fill=tk.X, pady=(5, 0))
 
         # Countdown
-        ttk.Label(lv_row, text="Đếm ngược:").pack(side=tk.LEFT, padx=(20, 0))
+        cd_row = ttk.Frame(output_frame)
+        cd_row.pack(fill=tk.X, pady=(5, 0))
+
+        ttk.Label(cd_row, text="⏱️ Đếm ngược:").pack(side=tk.LEFT)
         self.countdown_var = tk.IntVar(value=5)
-        ttk.Spinbox(lv_row, from_=1, to=30, textvariable=self.countdown_var, width=5).pack(side=tk.LEFT, padx=5)
-        ttk.Label(lv_row, text="giây").pack(side=tk.LEFT)
+        ttk.Spinbox(cd_row, from_=1, to=30, textvariable=self.countdown_var, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(cd_row, text="giây").pack(side=tk.LEFT)
+
+    # --- Timing & Dry Run ---
+
+    def _on_timing_changed(self):
+        self.engine.set_timing_preset(self.timing_var.get())
+
+    def _on_dry_run_changed(self):
+        self.engine.set_dry_run(self.dry_run_var.get())
+
+    # --- Undo/Redo ---
+
+    def _undo(self):
+        if self.engine.can_undo():
+            self.engine.undo_template()
+            if self.engine.template:
+                self.steps = self.engine.template.get('steps', [])
+                self._refresh_steps_tree()
+
+    def _redo(self):
+        if self.engine.can_redo():
+            self.engine.redo_template()
+            if self.engine.template:
+                self.steps = self.engine.template.get('steps', [])
+                self._refresh_steps_tree()
 
     # --- Template Methods ---
 
@@ -218,6 +269,23 @@ class CapCutPanel(ttk.Frame):
             self.steps[idx] = dialog.result
             self._refresh_steps_tree()
 
+    def _clone_step(self):
+        """Clone selected step"""
+        sel = self.steps_tree.selection()
+        if not sel:
+            messagebox.showinfo("Thông báo", "Chọn 1 bước để clone")
+            return
+        idx = int(sel[0])
+        import copy
+        cloned = copy.deepcopy(self.steps[idx])
+        cloned['id'] = len(self.steps) + 1
+        cloned['label'] = cloned.get('label', '') + ' (Copy)'
+        self.steps.insert(idx + 1, cloned)
+        # Re-number
+        for i, s in enumerate(self.steps):
+            s['id'] = i + 1
+        self._refresh_steps_tree()
+
     def _delete_step(self):
         sel = self.steps_tree.selection()
         if not sel:
@@ -225,7 +293,6 @@ class CapCutPanel(ttk.Frame):
         idx = int(sel[0])
         if messagebox.askyesno("Xác nhận", f"Xóa bước {idx + 1}?"):
             self.steps.pop(idx)
-            # Re-number IDs
             for i, s in enumerate(self.steps):
                 s['id'] = i + 1
             self._refresh_steps_tree()
@@ -260,14 +327,20 @@ class CapCutPanel(ttk.Frame):
         if path:
             self.output_dir_var.set(path)
 
+    def set_data_manager(self, data_manager):
+        """Update data manager reference"""
+        self.data_manager = data_manager
+        self.level_selector.set_data_manager(data_manager)
+
     def get_run_config(self):
         """Lấy config để chạy automation"""
         return {
             'template': {"name": "current", "steps": self.steps},
             'output_dir': self.output_dir_var.get(),
-            'level_start': self.level_start_var.get(),
-            'level_end': self.level_end_var.get(),
+            'levels': self.level_selector.get_levels(),
             'countdown': self.countdown_var.get(),
+            'timing_preset': self.timing_var.get(),
+            'dry_run': self.dry_run_var.get(),
         }
 
 
