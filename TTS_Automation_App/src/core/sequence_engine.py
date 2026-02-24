@@ -7,6 +7,8 @@ import time
 import json
 import threading
 import copy
+import os
+import glob
 
 
 class SequenceEngine:
@@ -97,6 +99,85 @@ class SequenceEngine:
         self._pause_event.wait()  # Block nếu đang pause
         return not self._stop_event.is_set()
 
+    # ==================== Smart Wait (File/Process Detection) ====================
+
+    def _wait_for_file_export(self, export_dir, dialog_id, max_wait=15, check_interval=0.5):
+        """
+        Chờ cho đến khi file audio được export.
+        Thay vì delay cứng, detect file thực tế được tạo.
+        
+        Args:
+            export_dir: Thư mục chứa file export
+            dialog_id: ID của dialog (tên file)
+            max_wait: Thời gian chờ tối đa (giây)
+            check_interval: Khoảng time check file (giây)
+        
+        Returns:
+            True nếu file được tạo, False nếu timeout
+        """
+        expected_file = os.path.join(export_dir, f"{dialog_id}.mp3")
+        expected_file_wav = os.path.join(export_dir, f"{dialog_id}.wav")
+        
+        start_time = time.time()
+        last_size = 0
+        stable_count = 0  # Đếm bao nhiêu lần file size không thay đổi
+        
+        self._log(f"  ⏳ Chờ file export: {dialog_id}...")
+        
+        while time.time() - start_time < max_wait:
+            if not self._check_controls():
+                return False
+            
+            # Kiểm tra file MP3 hoặc WAV
+            for filepath in [expected_file, expected_file_wav]:
+                if os.path.exists(filepath):
+                    file_size = os.path.getsize(filepath)
+                    
+                    # File size phải > 0 và ổn định (không thay đổi 2 lần liên tiếp)
+                    if file_size > 0:
+                        if file_size == last_size:
+                            stable_count += 1
+                        else:
+                            stable_count = 0
+                            last_size = file_size
+                        
+                        if stable_count >= 2:  # File size ổn định
+                            elapsed = time.time() - start_time
+                            self._log(f"  ✅ File đã export trong {elapsed:.1f}s")
+                            return True
+            
+            time.sleep(check_interval)
+        
+        # Timeout
+        elapsed = time.time() - start_time
+        self._log(f"  ⚠️ Timeout chờ file (>{max_wait}s)")
+        return False
+
+    def _smart_wait(self, wait_after, export_dir=None, dialog_id=None):
+        """
+        Smart wait: Kết hợp file detection + delay fallback.
+        Nếu có export_dir + dialog_id → detect file export
+        Nếu không → dùng delay cứng
+        """
+        # Nếu có export directory, thử detect file
+        if export_dir and dialog_id and os.path.isdir(export_dir):
+            # Giảm max_wait xuống (vì nó có fallback delay)
+            max_wait_file = min(wait_after * 1.5, 20)
+            success = self._wait_for_file_export(export_dir, dialog_id, max_wait=max_wait_file, check_interval=0.3)
+            
+            if success:
+                return  # File đã được export, không cần chờ thêm
+        
+        # Fallback: dùng delay cứng với responsiveness tốt
+        elapsed = 0
+        while elapsed < wait_after:
+            if not self._check_controls():
+                return
+            chunk = min(0.2, wait_after - elapsed)
+            time.sleep(chunk)
+            elapsed += chunk
+
+
     # ==================== Template Editing (Undo/Redo) ====================
 
     def _save_undo_state(self):
@@ -153,6 +234,7 @@ class SequenceEngine:
         target = step.get('target')
         wait_after = step.get('wait_after', 0.5)
         label = step.get('label', '')
+        step_id = step.get('id', 0)
 
         # Apply timing preset
         multiplier = self.TIMING_PRESETS.get(self.timing_preset, 1.0)
@@ -206,19 +288,28 @@ class SequenceEngine:
                 self._log(f"  ⚠️ Unknown action: {action}")
 
         except Exception as e:
-            self._emit('on_error', step.get('id', 0), str(e))
+            self._emit('on_error', step_id, str(e))
             self._log(f"  ❌ Lỗi: {e}")
             return False
 
         if wait_after > 0:
-            # Chia sleep thành chunk nhỏ để responsive hơn với pause/stop
-            elapsed = 0
-            while elapsed < wait_after:
-                if not self._check_controls():
-                    return False
-                chunk = min(0.2, wait_after - elapsed)
-                time.sleep(chunk)
-                elapsed += chunk
+            # Kiểm tra nếu đây là step export → dùng smart wait
+            is_export_step = 'export' in label.lower() or step_id in [11, 23]  # Step 11: Start Reading, Step 23: Confirm Export
+            
+            if is_export_step and context.get('EXPORT_DIR'):
+                # Smart wait: detect file thay vì chỉ delay
+                dialog_id = context.get('DIALOG_ID', 'unknown')
+                export_dir = context.get('EXPORT_DIR', '')
+                self._smart_wait(wait_after, export_dir, dialog_id)
+            else:
+                # Regular wait: delay cứng
+                elapsed = 0
+                while elapsed < wait_after:
+                    if not self._check_controls():
+                        return False
+                    chunk = min(0.2, wait_after - elapsed)
+                    time.sleep(chunk)
+                    elapsed += chunk
 
         return True
 
