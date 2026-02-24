@@ -1,7 +1,7 @@
 general:
   data_file: ""
   google_sheet_url: ""
-  base_output_path: "F:\\Du_an_cty\\Sounds\\Voice\\Annoy_3"
+  base_output_path: "D:\\Du_an_cong_ty\\Voice"
   skip_rows: 2
 
 columns:

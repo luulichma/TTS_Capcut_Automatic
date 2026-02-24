@@ -120,8 +120,19 @@ class CapCutPanel(ttk.Frame):
         output_frame = ttk.Labelframe(self, text="📁 Cấu hình xuất", bootstyle="secondary")
         output_frame.pack(fill=tk.X)
 
+        # Language selector
+        lang_row = ttk.Frame(output_frame)
+        lang_row.pack(fill=tk.X, pady=(5, 0))
+
+        ttk.Label(lang_row, text="🌐 Ngôn ngữ:").pack(side=tk.LEFT)
+        self.language_var = tk.StringVar(value="English")
+        self.lang_combo = ttk.Combobox(lang_row, textvariable=self.language_var,
+                                       values=["English", "Vietnamese", "Japanese", "Korean", "Chinese"],
+                                       state="readonly", width=20)
+        self.lang_combo.pack(side=tk.LEFT, padx=5)
+
         out_row = ttk.Frame(output_frame)
-        out_row.pack(fill=tk.X)
+        out_row.pack(fill=tk.X, pady=(5, 0))
 
         ttk.Label(out_row, text="Thư mục gốc:").pack(side=tk.LEFT)
         self.output_dir_var = tk.StringVar(value=self.config_manager.get('general.base_output_path', ''))
@@ -341,6 +352,7 @@ class CapCutPanel(ttk.Frame):
             'countdown': self.countdown_var.get(),
             'timing_preset': self.timing_var.get(),
             'dry_run': self.dry_run_var.get(),
+            'language': self.language_var.get(),
         }
 
 
