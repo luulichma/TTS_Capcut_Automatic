@@ -1,0 +1,241 @@
+{
+  "name": "capcut_pc_tts",
+  "description": "Custom template",
+  "version": "1.0",
+  "steps": [
+    {
+      "id": 1,
+      "action": "click",
+      "target": [
+        322,
+        891
+      ],
+      "label": "Click Audio Timeline",
+      "description": "Click vào timeline audio để chọn audio cũ",
+      "wait_after": 0.5
+    },
+    {
+      "id": 2,
+      "action": "key",
+      "target": "delete",
+      "label": "Xóa audio cũ",
+      "description": "Nhấn Delete để xóa audio cũ trên timeline",
+      "wait_after": 0.5
+    },
+    {
+      "action": "click",
+      "target": [
+        270,
+        779
+      ],
+      "label": "Click Text Timeline",
+      "wait_after": 0.6,
+      "description": "Click vào timeline text để chọn text element",
+      "id": 3
+    },
+    {
+      "id": 4,
+      "action": "click",
+      "target": [
+        1543,
+        58
+      ],
+      "label": "Chọn Tab Text",
+      "description": "Click vào tab Text trên panel bên phải",
+      "wait_after": 0.5
+    },
+    {
+      "id": 5,
+      "action": "click",
+      "target": [
+        1781,
+        157
+      ],
+      "label": "Click ô nhập liệu",
+      "description": "Click vào ô input để focus",
+      "wait_after": 0.3
+    },
+    {
+      "id": 6,
+      "action": "hotkey",
+      "target": "ctrl+a",
+      "label": "Chọn tất cả text cũ",
+      "description": "Select All để chuẩn bị xóa text cũ",
+      "wait_after": 0.2
+    },
+    {
+      "id": 7,
+      "action": "key",
+      "target": "backspace",
+      "label": "Xóa text cũ",
+      "description": "Xóa text đã chọn",
+      "wait_after": 0.3
+    },
+    {
+      "id": 8,
+      "action": "paste_text",
+      "target": null,
+      "source": "{{CURRENT_TEXT}}",
+      "label": "Dán nội dung mới",
+      "description": "Copy text từ data và paste vào ô nhập liệu",
+      "wait_after": 1.0
+    },
+    {
+      "id": 9,
+      "action": "click",
+      "target": [
+        1767,
+        55
+      ],
+      "label": "Chọn Tab TTS",
+      "description": "Chuyển sang tab Text-to-Speech",
+      "wait_after": 0.5
+    },
+    {
+      "id": 10,
+      "action": "click",
+      "target": [
+        1555,
+        167
+      ],
+      "label": "Chọn giọng đọc",
+      "description": "Chọn giọng TTS (Linh cho VI, Jessie cho EN)",
+      "wait_after": 0.5
+    },
+    {
+      "action": "click",
+      "target": [
+        1843,
+        554
+      ],
+      "label": "Bắt đầu đọc (Start Reading)",
+      "wait_after": 6.0,
+      "description": "Click nút Start Reading để CapCut render audio",
+      "id": 11
+    },
+    {
+      "id": 12,
+      "action": "hotkey",
+      "target": "ctrl+e",
+      "label": "Mở Export Dialog",
+      "description": "Mở hộp thoại xuất file",
+      "wait_after": 2.0
+    },
+    {
+      "id": 13,
+      "action": "click",
+      "target": [
+        1126,
+        292
+      ],
+      "label": "Click ô tên file",
+      "description": "Focus vào ô nhập tên file trong dialog export",
+      "wait_after": 0.2
+    },
+    {
+      "id": 14,
+      "action": "hotkey",
+      "target": "ctrl+a",
+      "label": "Chọn tên file cũ",
+      "description": "Select All tên file cũ",
+      "wait_after": 0.1
+    },
+    {
+      "id": 15,
+      "action": "key",
+      "target": "backspace",
+      "label": "Xóa tên cũ",
+      "description": "Xóa tên file cũ",
+      "wait_after": 0.2
+    },
+    {
+      "id": 16,
+      "action": "paste_text",
+      "target": null,
+      "source": "{{DIALOG_ID}}",
+      "label": "Dán tên file (Dialog ID)",
+      "description": "Paste Dialog ID làm tên file export",
+      "wait_after": 0.5
+    },
+    {
+      "id": 17,
+      "action": "click",
+      "target": [
+        1290,
+        329
+      ],
+      "label": "Mở chọn thư mục",
+      "description": "Click nút chọn thư mục lưu",
+      "wait_after": 0.3
+    },
+    {
+      "id": 18,
+      "action": "click",
+      "target": [
+        900,
+        672
+      ],
+      "label": "Click ô đường dẫn",
+      "description": "Focus vào ô nhập đường dẫn thư mục",
+      "wait_after": 0.2
+    },
+    {
+      "id": 19,
+      "action": "hotkey",
+      "target": "ctrl+a",
+      "label": "Chọn đường dẫn cũ",
+      "description": "Select All đường dẫn cũ",
+      "wait_after": 0.1
+    },
+    {
+      "id": 20,
+      "action": "key",
+      "target": "backspace",
+      "label": "Xóa đường dẫn cũ",
+      "description": "",
+      "wait_after": 0.2
+    },
+    {
+      "id": 21,
+      "action": "paste_text",
+      "target": null,
+      "source": "{{EXPORT_DIR}}",
+      "label": "Dán đường dẫn export",
+      "description": "Paste đường dẫn thư mục xuất",
+      "wait_after": 0.5
+    },
+    {
+      "id": 22,
+      "action": "click",
+      "target": [
+        1383,
+        699
+      ],
+      "label": "Bấm nút Export",
+      "description": "Click nút Export để bắt đầu xuất file",
+      "wait_after": 0.5
+    },
+    {
+      "action": "click",
+      "target": [
+        1077,
+        832
+      ],
+      "label": "Xác nhận Export",
+      "wait_after": 10.0,
+      "description": "Click xác nhận trong dialog",
+      "id": 23
+    },
+    {
+      "id": 24,
+      "action": "click",
+      "target": [
+        1294,
+        714
+      ],
+      "label": "Đóng thông báo hoàn tất",
+      "description": "Click OK để đóng dialog thông báo export thành công",
+      "wait_after": 2.0
+    }
+  ]
+}

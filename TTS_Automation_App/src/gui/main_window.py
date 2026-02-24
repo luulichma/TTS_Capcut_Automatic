@@ -565,9 +565,22 @@ class MainWindow:
             messagebox.showwarning("Chưa chọn ngôn ngữ", "Vui lòng gán ngôn ngữ cho ít nhất 1 cột!")
             return
 
-        text_col_idx = list(lang_cols.keys())[0]
-        lang_name = lang_cols[text_col_idx]
+        # Get selected language from CapCut panel
+        selected_language = config.get('language', 'English')
+        
+        # Find the column index for the selected language
+        text_col_idx = None
+        for col_idx, lang_name in lang_cols.items():
+            if lang_name == selected_language:
+                text_col_idx = col_idx
+                break
+        
+        # Fallback to first language if selected one not found
+        if text_col_idx is None:
+            text_col_idx = list(lang_cols.keys())[0]
+            selected_language = lang_cols[text_col_idx]
 
+        lang_name = selected_language
         key_col = self.data_manager.column_names[key_col_idx]
         text_col = self.data_manager.column_names[text_col_idx]
 
